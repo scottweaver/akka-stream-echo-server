@@ -9,5 +9,5 @@ The EchoServer code itself attempts to demonstrate th following idioms/ideas fou
 ## Usage:
 
 1. sbt "run-main stream.EchoServer"
-2. Telent to 127.0.0.1 6000
+2. Telnet to 127.0.0.1 6000
 3. Proceed to talk to yourself.
