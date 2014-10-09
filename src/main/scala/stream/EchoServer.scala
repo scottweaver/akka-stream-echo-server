@@ -6,7 +6,9 @@ import java.nio.charset.Charset
 import akka.actor._
 import akka.io.IO
 import akka.pattern.ask
-import akka.stream.MaterializerSettings
+import akka.stream.{OverflowStrategy, MaterializerSettings}
+import akka.stream.actor.ActorSubscriberMessage.{OnComplete, OnError, OnNext}
+import akka.stream.actor.{WatermarkRequestStrategy, ActorSubscriber}
 import akka.stream.io.StreamTcp
 import akka.stream.io.StreamTcp.IncomingTcpConnection
 import akka.stream.scaladsl2._
@@ -59,26 +61,23 @@ object EchoServer {
      * logging everything that flows through the echo server.
      */
     val loggingActor = system.actorOf(LoggingActor.props(remoteAddr))
-    val loggingSink = ForeachSink[String] {
-      case message: String => {
-        loggingActor ! message
-      }
-    }
+    val loggingSink = SubscriberSink[String](ActorSubscriber(loggingActor))
 
     /**
      * We can use a FlowFrom to convert the ByteString into a human-readable string that can
      * be sent to a logger.  The logger implementation could have easily done this however
      * doing this way is a great example of how to use a FlowFrom.
      */
-    val flowToString = FlowFrom[ByteString].map(_.decodeString(Charset.defaultCharset().toString))
+    val flowToString = FlowFrom[ByteString].buffer(20, OverflowStrategy.backpressure)
+                                           .map(_.decodeString(Charset.defaultCharset().toString))
 
     /**
      * This is an example of an OnComplete sink.  This works well if you need to perform clean up
      * when a user disconnects.  
      */
     val notifyOnLeaving = OnCompleteSink[ByteString] {
-      case Success(_)  => loggingActor ! s"SYSTEM MESSAGE: User(${remoteAddr}) has disconnected."
-      case Failure(ex) => loggingActor ! s"SYSTEM MESSAGE: An unexpected error has occurred ${ex}."
+      case Success(_)  => println(s"<<< SYSTEM MESSAGE: User(${remoteAddr}) has disconnected. >>>")
+      case Failure(ex) => println(s"<<< SYSTEM MESSAGE: An unexpected error has occurred ${ex}. >>>5")
     }
 
     /**
@@ -132,10 +131,14 @@ object EchoServer {
   }
 }
 
-class LoggingActor(remoteAddr: InetSocketAddress) extends Actor with ActorLogging {
+class LoggingActor(remoteAddr: InetSocketAddress) extends ActorSubscriber with ActorLogging {
+
+  val requestStrategy = WatermarkRequestStrategy(20)
+
   def receive = {
-    case message: String => logFormattedMessage(message)
-    case wtf: Any => logFormattedMessage(wtf.toString)
+    case OnNext(message: String) => logFormattedMessage(message)
+    case OnError(ex)             => log.error(s"Error encountered an error during logging ${ex}.")
+    case OnComplete              => log.info(s"Logging shutting down for ${remoteAddr}.")
   }
 
   def logFormattedMessage(message: String) = {
