@@ -6,7 +6,7 @@ import java.nio.charset.Charset
 import akka.actor._
 import akka.io.IO
 import akka.pattern.ask
-import akka.stream.MaterializerSettings
+import akka.stream.{OverflowStrategy, MaterializerSettings}
 import akka.stream.actor.ActorSubscriberMessage.{OnComplete, OnError, OnNext}
 import akka.stream.actor.{WatermarkRequestStrategy, ActorSubscriber}
 import akka.stream.io.StreamTcp
@@ -68,7 +68,8 @@ object EchoServer {
      * be sent to a logger.  The logger implementation could have easily done this however
      * doing this way is a great example of how to use a FlowFrom.
      */
-    val flowToString = FlowFrom[ByteString].map(_.decodeString(Charset.defaultCharset().toString))
+    val flowToString = FlowFrom[ByteString].buffer(20, OverflowStrategy.backpressure)
+                                           .map(_.decodeString(Charset.defaultCharset().toString))
 
     /**
      * This is an example of an OnComplete sink.  This works well if you need to perform clean up
