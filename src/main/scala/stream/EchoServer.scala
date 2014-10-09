@@ -75,8 +75,8 @@ object EchoServer {
      * when a user disconnects.  
      */
     val notifyOnLeaving = OnCompleteSink[ByteString] {
-      case Success(_)  => loggingActor ! s"SYSTEM MESSAGE: User(${remoteAddr}) has disconnected."
-      case Failure(ex) => loggingActor ! s"SYSTEM MESSAGE: An unexpected error has occurred ${ex}."
+      case Success(_)  => println(s"<<< SYSTEM MESSAGE: User(${remoteAddr}) has disconnected. >>>")
+      case Failure(ex) => println(s"<<< SYSTEM MESSAGE: An unexpected error has occurred ${ex}. >>>5")
     }
 
     /**
