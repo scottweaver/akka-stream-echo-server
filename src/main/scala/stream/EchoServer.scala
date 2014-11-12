@@ -6,12 +6,12 @@ import java.nio.charset.Charset
 import akka.actor._
 import akka.io.IO
 import akka.pattern.ask
-import akka.stream.{OverflowStrategy, MaterializerSettings}
+import akka.stream.{FlowMaterializer, OverflowStrategy, MaterializerSettings}
 import akka.stream.actor.ActorSubscriberMessage.{OnComplete, OnError, OnNext}
 import akka.stream.actor.{WatermarkRequestStrategy, ActorSubscriber}
 import akka.stream.io.StreamTcp
 import akka.stream.io.StreamTcp.IncomingTcpConnection
-import akka.stream.scaladsl2._
+import akka.stream.scaladsl._
 import akka.util.{ByteString, Timeout}
 import org.reactivestreams.{Publisher, Subscriber}
 
@@ -43,7 +43,7 @@ object EchoServer {
 
   /**
    * You could easily do pub.subscribe(sub) to get the echo server to work.  However, if you want
-   * to do more than just echo, e.g. log all the data that gets echoed, you can hook additional drains
+   * to do more than just echo, e.g. log all the data that gets echoed, you can hook additional sinks
    * on to the Publisher using a FlowGraph and broadcast it.
    *
    *
@@ -53,15 +53,15 @@ object EchoServer {
    * @return
    */
   def byteStringHandling(pub: Publisher[ByteString], sub: Subscriber[ByteString], remoteAddr: InetSocketAddress)(implicit materializer: FlowMaterializer, system: ActorSystem) = {
-    val in = PublisherTap(pub)
-    val out = SubscriberDrain(sub)
+    val in = PublisherSource(pub)
+    val out = SubscriberSink(sub)
 
     /**
-     * This is really not needed but gives an example of how to us multiple drains to consume a Source.  For example
+     * This is really not needed but gives an example of how to us multiple sinks to consume a Source.  For example
      * logging everything that flows through the echo server.
      */
     val loggingActor = system.actorOf(LoggingActor.props(remoteAddr))
-    val loggingDrain = SubscriberDrain[String](ActorSubscriber(loggingActor))
+    val loggingSink = SubscriberSink[String](ActorSubscriber(loggingActor))
 
     /**
      * We can use a Flow to convert the ByteString into a human-readable string that can
@@ -72,10 +72,10 @@ object EchoServer {
                                            .map(_.decodeString(Charset.defaultCharset().toString))
 
     /**
-     * This is an example of an OnComplete drain.  This works well if you need to perform clean up
+     * This is an example of an OnComplete sink.  This works well if you need to perform clean up
      * when a user disconnects.  
      */
-    val notifyOnLeaving = OnCompleteDrain[ByteString] {
+    val notifyOnLeaving = OnCompleteSink[ByteString] {
       case Success(_)  => println(s"<<< SYSTEM MESSAGE: User($remoteAddr) has disconnected. >>>")
       case Failure(ex) => println(s"<<< SYSTEM MESSAGE: An unexpected error has occurred $ex. >>>")
     }
@@ -85,11 +85,11 @@ object EchoServer {
       * multiple operations on the same ByteString stream.
       */
     val echoGraph = FlowGraph { implicit b =>
-      import akka.stream.scaladsl2.FlowGraphImplicits._
+      import akka.stream.scaladsl.FlowGraphImplicits._
       val bcast = Broadcast[ByteString]
       in ~> bcast ~> out  /** This performs the actual echo, this is synonymous with in.subscribe(out) */
-            bcast ~> flowToString ~> loggingDrain /** This logs all echo messages that pass through */
-            bcast ~> notifyOnLeaving  /** We use an OnComplete drain to notify us when a user disconnects. */
+            bcast ~> flowToString ~> loggingSink /** This logs all echo messages that pass through */
+            bcast ~> notifyOnLeaving  /** We use an OnComplete sink to notify us when a user disconnects. */
     }.run()
 
   }
@@ -111,7 +111,7 @@ object EchoServer {
          * This fires for each connection received then delegates the Input(Publisher) and Output (Subscriber)
          * to a FlowGraph.
          */
-        val connectionDistributor = ForeachDrain[IncomingTcpConnection] {
+        val connectionDistributor = ForeachSink[IncomingTcpConnection] {
           case conn: IncomingTcpConnection => println(s"Got a connection from ${conn.remoteAddress}!")
             byteStringHandling(conn.inputStream, conn.outputStream, conn.remoteAddress)
         }
@@ -120,10 +120,10 @@ object EchoServer {
           * This initial FlowGraph will accept IncomingTcpConnection which will be sent
           * on for actual echo processing via the connectionDistributor drain.
           */
-        val connectionPublisher = PublisherTap(serverBinding.connectionStream)
+        val connectionPublisher = PublisherSource(serverBinding.connectionStream)
 
         FlowGraph { implicit b =>
-          import akka.stream.scaladsl2.FlowGraphImplicits._
+          import akka.stream.scaladsl.FlowGraphImplicits._
           connectionPublisher ~> connectionDistributor
         } run()
 
