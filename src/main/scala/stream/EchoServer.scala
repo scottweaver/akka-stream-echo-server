@@ -4,17 +4,12 @@ import java.net.InetSocketAddress
 import java.nio.charset.Charset
 
 import akka.actor._
-import akka.io.IO
-import akka.pattern.ask
-import akka.stream.{FlowMaterializer, OverflowStrategy, MaterializerSettings}
+import akka.stream.{FlowMaterializer, OverflowStrategy}
 import akka.stream.actor.ActorSubscriberMessage.{OnComplete, OnError, OnNext}
 import akka.stream.actor.{WatermarkRequestStrategy, ActorSubscriber}
 import akka.stream.io.StreamTcp
-import akka.stream.io.StreamTcp.IncomingTcpConnection
 import akka.stream.scaladsl._
 import akka.util.{ByteString, Timeout}
-import org.reactivestreams.{Publisher, Subscriber}
-
 import scala.concurrent.duration._
 import scala.util.{Failure, Success}
 
@@ -24,8 +19,7 @@ import scala.util.{Failure, Success}
  *
  * Implementation of the TcpEcho (server only) from the Typesafe Activator template akka-stream-scala.
  *
- * The intention here was to provide an example of the new FlowGraph DSL introduced in akka-stream 0.7 as the version
- * in the Activator template is dated, relatively speaking.
+ * The intention here was to provide an example of the using the FlowGraph DSL to enhance a simple echo server.
  */
 object EchoServer {
   /**
@@ -42,19 +36,20 @@ object EchoServer {
   }
 
   /**
-   * You could easily do pub.subscribe(sub) to get the echo server to work.  However, if you want
-   * to do more than just echo, e.g. log all the data that gets echoed, you can hook additional sinks
-   * on to the Publisher using a FlowGraph and broadcast it.
+   * Creates a `Flow` using a `FlowGraph` the does performs multiple tasks on the `ByteString` as it
+   * flows from `Source` to the `Sink`. In the end, the raw `ByteString` is echoed back to the client.
+   *
+   * You could easily do `conn handleWith createFlow` to get simple echo functionality.  However, this
+   * example shows so perform common tasks on a stream as it is processed.
    *
    *
-   * @param pub
-   * @param sub
    * @param materializer
    * @return
    */
-  def byteStringHandling(pub: Publisher[ByteString], sub: Subscriber[ByteString], remoteAddr: InetSocketAddress)(implicit materializer: FlowMaterializer, system: ActorSystem) = {
-    val in = PublisherSource(pub)
-    val out = SubscriberSink(sub)
+  def createFlow(remoteAddr: String)(implicit materializer: FlowMaterializer, system: ActorSystem) : Flow[ByteString, ByteString] = {
+
+    val in = UndefinedSource[ByteString]
+    val out = UndefinedSink[ByteString]
 
     /**
      * This is really not needed but gives an example of how to us multiple sinks to consume a Source.  For example
@@ -84,53 +79,38 @@ object EchoServer {
       * This FlowGraph glues all of our processing bits together so we can perform
       * multiple operations on the same ByteString stream.
       */
-    val echoGraph = FlowGraph { implicit b =>
+    Flow[ByteString, ByteString]() { implicit b =>
       import akka.stream.scaladsl.FlowGraphImplicits._
       val bcast = Broadcast[ByteString]
       in ~> bcast ~> out  /** This performs the actual echo, this is synonymous with in.subscribe(out) */
             bcast ~> flowToString ~> loggingSink /** This logs all echo messages that pass through */
             bcast ~> notifyOnLeaving  /** We use an OnComplete sink to notify us when a user disconnects. */
-    }.run()
+      in -> out
+    }
 
   }
 
   def server(system: ActorSystem, serverAddress: InetSocketAddress): Unit = {
     implicit val sys = system
-    implicit val ec = system.dispatcher
-    val settings = MaterializerSettings(sys)
-    implicit val materializer = FlowMaterializer(settings)
+    import system.dispatcher
+    implicit val materializer = FlowMaterializer()
     implicit val timeout = Timeout(5.seconds)
 
-    val serverFuture = IO(StreamTcp) ? StreamTcp.Bind(localAddress = serverAddress)
-
-    serverFuture.onSuccess {
-      case serverBinding: StreamTcp.TcpServerBinding =>
-        println("Server started, listening on: " + serverBinding.localAddress)
-
-        /**
-         * This fires for each connection received then delegates the Input(Publisher) and Output (Subscriber)
-         * to a FlowGraph.
-         */
-        val connectionDistributor = ForeachSink[IncomingTcpConnection] {
-          case conn: IncomingTcpConnection => println(s"Got a connection from ${conn.remoteAddress}!")
-            byteStringHandling(conn.inputStream, conn.outputStream, conn.remoteAddress)
-        }
-
-        /**
-          * This initial FlowGraph will accept IncomingTcpConnection which will be sent
-          * on for actual echo processing via the connectionDistributor drain.
-          */
-        val connectionPublisher = PublisherSource(serverBinding.connectionStream)
-
-        FlowGraph { implicit b =>
-          import akka.stream.scaladsl.FlowGraphImplicits._
-          connectionPublisher ~> connectionDistributor
-        } run()
-
+    /**
+     * This fires for each connection received.
+     */
+    val connectionDistributor = ForeachSink[StreamTcp.IncomingConnection] { conn =>
+        println(s"Got a connection from ${conn.remoteAddress}!")
+      conn handleWith createFlow(conn.remoteAddress.getHostString)
     }
 
-    serverFuture.onFailure {
-      case e: Throwable =>
+    val serverBinding = StreamTcp().bind(serverAddress)
+    val materializedServer = serverBinding.connections.to(connectionDistributor).run()
+
+    serverBinding.localAddress(materializedServer).onComplete {
+      case Success(address) =>
+        println("Server started, listening on: " + address)
+      case Failure(e) =>
         println(s"Server could not bind to $serverAddress: ${e.getMessage}")
         system.shutdown()
     }
@@ -138,7 +118,7 @@ object EchoServer {
   }
 }
 
-class LoggingActor(remoteAddr: InetSocketAddress) extends ActorSubscriber with ActorLogging {
+class LoggingActor(remoteAddr: String) extends ActorSubscriber with ActorLogging {
 
   val requestStrategy = WatermarkRequestStrategy(20)
 
@@ -154,7 +134,7 @@ class LoggingActor(remoteAddr: InetSocketAddress) extends ActorSubscriber with A
 }
 
 object LoggingActor {
-  def props(remoteAddr: InetSocketAddress) = {
+  def props(remoteAddr: String) = {
     Props(classOf[LoggingActor], remoteAddr)
   }
 }
