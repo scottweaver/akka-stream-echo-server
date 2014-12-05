@@ -2,7 +2,7 @@
 
 This an implementation of an echo server based off of the the TcpEcho (server only) from the typesafe Activator template akka-stream-scala.
  
-The intention here was to provide an example of the new FlowGraph DSL (currently called DSL2) introduced in akka-stream 0.7 as the version in the Activator template is dated, relatively speaking.
+The intention here was to provide an example of how to use the FlowGraph DSL to add additional functionality to the original TcpEcho server. 
 
 The EchoServer code itself attempts to demonstrate th following idioms/ideas found within FlowGraph DSL: Broadcast, FlowFrom, Sources and Sinks.
 
